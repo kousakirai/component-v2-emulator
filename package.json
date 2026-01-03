@@ -1,0 +1,113 @@
+{
+  "name": "discord-component-preview",
+  "displayName": "Discord Component Preview",
+  "description": "Preview discord.py ComponentV2 (Buttons, SelectMenus, etc.) in VS Code",
+  "version": "0.1.0",
+  "publisher": "kousakirai",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Visualization"
+  ],
+  "activationEvents": [
+    "onLanguage:python"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "discord-preview.showPreview",
+        "title": "Show Discord Component Preview",
+        "category": "Discord"
+      },
+      {
+        "command": "discord-preview.insertTemplate",
+        "title": "Insert Component Template",
+        "category": "Discord"
+      },
+      {
+        "command": "discord-preview.showProjectOverview",
+        "title": "Show Project Component Overview",
+        "category": "Discord"
+      },
+      {
+        "command": "discord-preview.exportComponents",
+        "title": "Export Components",
+        "category": "Discord"
+      },
+      {
+        "command": "discord-preview.openSettings",
+        "title": "Open Settings",
+        "category": "Discord"
+      },
+      {
+        "command": "discord-preview.resetSettings",
+        "title": "Reset Settings to Default",
+        "category": "Discord"
+      },
+      {
+        "command": "discord-preview.searchComponents",
+        "title": "Search Components in Workspace",
+        "category": "Discord"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "when": "resourceLangId == python",
+          "command": "discord-preview.showPreview",
+          "group": "navigation"
+        },
+        {
+          "when": "resourceLangId == python",
+          "command": "discord-preview.insertTemplate",
+          "group": "navigation"
+        },
+        {
+          "when": "resourceLangId == python",
+          "command": "discord-preview.exportComponents",
+          "group": "navigation"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "discord-preview.showPreview",
+          "when": "resourceLangId == python"
+        },
+        {
+          "command": "discord-preview.insertTemplate",
+          "when": "resourceLangId == python"
+        },
+        {
+          "command": "discord-preview.showProjectOverview"
+        },
+        {
+          "command": "discord-preview.exportComponents",
+          "when": "resourceLangId == python"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/glob": "^8.1.0",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^18.19.130",
+    "@types/vscode": "^1.80.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "@vscode/test-electron": "^2.5.2",
+    "eslint": "^8.40.0",
+    "glob": "^13.0.0",
+    "mocha": "^11.7.5",
+    "typescript": "^5.0.0"
+  }
+}
