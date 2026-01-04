@@ -47,8 +47,8 @@ export function validateComponents(components: ComponentData[]): ValidationWarni
     // Validate components per row
     rows.forEach((row, index) => {
         if (row.components.length > LIMITS.MAX_COMPONENTS_PER_ROW) {
-            const rowDesc = row.row === 0 
-                ? `Row 0 (including components without explicit row parameter)` 
+            const rowDesc = row.row === 0
+                ? `Row 0 (including components without explicit row parameter)`
                 : `Row ${row.row}`;
             warnings.push({
                 severity: 'error',

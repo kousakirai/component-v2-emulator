@@ -4,3 +4,5 @@ out
 .vscode-test
 __pycache__
 *.pyc
+discord-py_1.md
+__pycache__

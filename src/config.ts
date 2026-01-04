@@ -92,7 +92,7 @@ export class ConfigurationManager {
     static async importConfig(jsonString: string): Promise<void> {
         try {
             const config = JSON.parse(jsonString);
-            
+
             for (const [key, value] of Object.entries(config)) {
                 await this.set(key, value);
             }

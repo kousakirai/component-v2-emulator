@@ -19,7 +19,33 @@ export interface ParseError {
 /**
  * Supported component types
  */
-export type ComponentType = 'button' | 'select_menu' | 'text_input' | 'modal';
+export type ComponentType =
+  | 'button'
+  | 'select_menu'
+  | 'text_input'
+  | 'modal'
+  | 'text_display'
+  | 'label'
+  | 'separator'
+  | 'thumbnail'
+  | 'file'
+  | 'media_gallery'
+  | 'file_upload';
+
+/**
+ * View base type - supports View, Modal, and LayoutView
+ */
+export type ViewBaseType = 'View' | 'Modal' | 'LayoutView';
+
+/**
+ * Container types in discord.py UI hierarchy
+ */
+export type ContainerType = 'container' | 'section';
+
+/**
+ * Node types in the UI hierarchy
+ */
+export type NodeType = 'view' | 'modal' | 'container' | 'section' | 'actionrow' | 'item';
 
 /**
  * Button style types (normalized to strings)
@@ -95,21 +121,111 @@ export interface ModalProperties {
 }
 
 /**
- * Union type for all component properties
+ * Container component properties
  */
-export type ComponentProperties = 
-  | ButtonProperties 
-  | SelectMenuProperties 
-  | TextInputProperties 
-  | ModalProperties;
+export interface ContainerProperties {
+  type: ContainerType;
+  label?: string; // Section label
+  line?: number;
+}
 
 /**
- * Generic component data structure
+ * ActionRow properties with metadata
+ */
+export interface ActionRowProperties {
+  row: number;
+  maxItems: number; // Always 5 for Discord
+  currentItems: number;
+  line?: number;
+}
+
+/**
+ * TextDisplay component properties
+ */
+export interface TextDisplayProperties {
+  content: string;
+  style?: 'plain' | 'bold' | 'italic';
+}
+
+/**
+ * Label component properties
+ */
+export interface LabelProperties {
+  text: string;
+  for?: string; // Associated component ID
+}
+
+/**
+ * Separator spacing types
+ */
+export type SeparatorSpacing = 'small' | 'medium' | 'large';
+
+/**
+ * Separator component properties
+ */
+export interface SeparatorProperties {
+  spacing?: SeparatorSpacing;
+}
+
+/**
+ * Thumbnail component properties
+ */
+export interface ThumbnailProperties {
+  url: string;
+  alt?: string;
+  width?: number;
+  height?: number;
+}
+
+/**
+ * File component properties
+ */
+export interface FileProperties {
+  filename: string;
+  url?: string;
+  size?: number;
+}
+
+/**
+ * MediaGallery component properties
+ */
+export interface MediaGalleryProperties {
+  items: any[]; // MediaGalleryItem array
+}
+
+/**
+ * FileUpload component properties
+ */
+export interface FileUploadProperties {
+  accept?: string[]; // Accepted file types
+  multiple?: boolean;
+}
+
+/**
+ * Union type for all component properties
+ */
+export type ComponentProperties =
+  | ButtonProperties
+  | SelectMenuProperties
+  | TextInputProperties
+  | ModalProperties
+  | ContainerProperties
+  | ActionRowProperties
+  | TextDisplayProperties
+  | LabelProperties
+  | SeparatorProperties
+  | ThumbnailProperties
+  | FileProperties
+  | MediaGalleryProperties
+  | FileUploadProperties;
+
+/**
+ * Base component data structure
  */
 export interface ComponentData {
   type: ComponentType;
   properties: ComponentProperties;
-  line?: number; // Line number in source file
+  line?: number;
 }
 
 /**
@@ -134,14 +250,27 @@ export interface ParseResult {
 }
 
 /**
- * View/Modal structure information
+ * Hierarchical node representing any level of UI structure
+ */
+export interface HierarchyNode {
+  nodeType: NodeType;
+  data: ComponentData | ContainerProperties | ActionRowProperties;
+  children?: HierarchyNode[];
+  line?: number;
+}
+
+/**
+ * View/Modal/LayoutView structure information (Enhanced with hierarchy support)
  */
 export interface ViewStructure {
   name: string;
-  type: 'View' | 'Modal';
+  type: ViewBaseType; // View, Modal, or LayoutView
   line: number;
-  components: ComponentData[];
+  components: ComponentData[]; // Legacy flat structure (for backward compatibility)
+  children?: HierarchyNode[]; // New hierarchical structure
   callback?: string; // on_submit for modals
+  isLayoutView?: boolean; // Flag for LayoutView
+  requiresManualLayout?: boolean; // LayoutView requires manual layout
 }
 
 /**

@@ -1,19 +1,24 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
-import { parseComponents, isDiscordPyFile } from './pythonBridge';
+import { parseComponents } from './pythonBridge';
 import { WebviewManager } from './webview';
 import { getPythonPath, getPythonVersion } from './pythonInterpreter';
-import { COMPONENT_TEMPLATES, getAllCategories, getTemplatesByCategory } from './templates';
-import { ProjectScanner } from './projectScanner';
-import { ComponentExporter } from './exporter';
-import { ConfigurationManager } from './config';
-import { ComponentSearch } from './search';
-import * as path from 'path';
+import { getAllCategories, getTemplatesByCategory } from './templates';
+import { ComponentCompletionProvider, ComponentSignatureHelpProvider } from './completionProvider';
+import { PresetManager, showPresetPicker, saveAsPreset } from './presetManager';
+import { ComponentEditor } from './componentEditor';
+import { UIBuilder } from './uiBuilder';
+import { registerCodeActionProvider } from './codeActionProvider';
+import { registerVersionDetection, DiscordPyStatusBar } from './versionDetector';
 
 let webviewManager: WebviewManager;
+let uiBuilder: UIBuilder;
 let currentDocument: vscode.TextDocument | undefined;
 let updateTimeout: NodeJS.Timeout | undefined;
 let diagnosticCollection: vscode.DiagnosticCollection;
+let presetManager: PresetManager;
+let componentEditor: ComponentEditor;
+let discordPyStatusBar: DiscordPyStatusBar;
 const DEBOUNCE_DELAY = 500; // ms
 
 /**
@@ -25,133 +30,173 @@ export function activate(context: vscode.ExtensionContext) {
     // Initialize webview manager
     webviewManager = WebviewManager.getInstance(context.extensionUri);
 
+    // Initialize UI Builder (with context for state persistence)
+    uiBuilder = UIBuilder.getInstance(context.extensionUri, context);
+
     // Initialize diagnostic collection
     diagnosticCollection = vscode.languages.createDiagnosticCollection('discord-components');
 
-    // Register command to show preview
-    const showPreviewCommand = vscode.commands.registerCommand(
-        'discord-preview.showPreview',
-        async () => {
+    // Register IntelliSense providers for Python
+    const completionProvider = vscode.languages.registerCompletionItemProvider(
+        { language: 'python', scheme: 'file' },
+        new ComponentCompletionProvider(),
+        '.', ' '
+    );
+
+    const signatureProvider = vscode.languages.registerSignatureHelpProvider(
+        { language: 'python', scheme: 'file' },
+        new ComponentSignatureHelpProvider(),
+        '(', ','
+    );
+
+    context.subscriptions.push(completionProvider, signatureProvider);
+
+    // Register CodeAction provider for Quick Fix suggestions
+    const codeActionProvider = registerCodeActionProvider(context);
+    context.subscriptions.push(codeActionProvider);
+
+    // Register discord.py version detection and status bar
+    discordPyStatusBar = registerVersionDetection(context);
+
+    // Initialize preset manager
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    presetManager = new PresetManager(workspaceFolder?.uri.fsPath);
+
+    // Initialize component editor
+    componentEditor = new ComponentEditor(context);
+
+    // === Commands ===
+
+    // Show preview
+    context.subscriptions.push(
+        vscode.commands.registerCommand('discord-preview.showPreview', async () => {
             await showPreview();
-        }
+        })
     );
 
-    // Register command to insert template
-    const insertTemplateCommand = vscode.commands.registerCommand(
-        'discord-preview.insertTemplate',
-        async () => {
+    // Insert template
+    context.subscriptions.push(
+        vscode.commands.registerCommand('discord-preview.insertTemplate', async () => {
             await insertTemplate();
-        }
+        })
     );
 
-    // Register command to show project overview
-    const showProjectOverviewCommand = vscode.commands.registerCommand(
-        'discord-preview.showProjectOverview',
-        async () => {
-            await showProjectOverview();
-        }
+    // Show preset picker
+    context.subscriptions.push(
+        vscode.commands.registerCommand('discord-preview.showPresetPicker', async () => {
+            await showPresetPicker(presetManager);
+        })
     );
 
-    // Register command to export components
-    const exportComponentsCommand = vscode.commands.registerCommand(
-        'discord-preview.exportComponents',
-        async () => {
-            await exportComponents();
-        }
+    // Save as preset
+    context.subscriptions.push(
+        vscode.commands.registerCommand('discord-preview.saveAsPreset', async () => {
+            await saveAsPreset(presetManager);
+        })
     );
+
+    // Edit component interactively
+    context.subscriptions.push(
+        vscode.commands.registerCommand('discord-preview.editComponent', async () => {
+            const editor = vscode.window.activeTextEditor;
+            if (!editor) {
+                vscode.window.showErrorMessage('No active editor');
+                return;
+            }
+
+            if (editor.document.languageId !== 'python') {
+                vscode.window.showErrorMessage('Please open a Python file');
+                return;
+            }
+
+            await componentEditor.openEditor(editor.document, editor.selection.active);
+        })
+    );
+
+    // Edit component at specific line (from preview click)
+    context.subscriptions.push(
+        vscode.commands.registerCommand('discord-preview.editComponentAtLine',
+            async (document: vscode.TextDocument, line: number) => {
+                await componentEditor.openEditorAtLine(document, line);
+            }
+        )
+    );
+
+    // Open UI Builder for LayoutView
+    context.subscriptions.push(
+        vscode.commands.registerCommand('discord-preview.openUIBuilder', async () => {
+            const editor = vscode.window.activeTextEditor;
+            if (editor && editor.document.languageId === 'python') {
+                uiBuilder.open(editor.document, editor.selection.active);
+            } else {
+                uiBuilder.open();
+            }
+        })
+    );
+
+    // Refresh preview (internal)
+    context.subscriptions.push(
+        vscode.commands.registerCommand('discord-preview.refresh', async () => {
+            if (currentDocument) {
+                await updatePreviewForDocument(currentDocument);
+            }
+        })
+    );
+
+    // === Event Listeners ===
 
     // Listen for file save events
-    const saveListener = vscode.workspace.onDidSaveTextDocument(async (document) => {
-        // Only process Python files
-        if (document.languageId !== 'python') {
-            return;
-        }
-
-        // Only update if preview is already visible
-        if (webviewManager.isVisible()) {
-            await updatePreviewForDocument(document);
-        }
-    });
+    context.subscriptions.push(
+        vscode.workspace.onDidSaveTextDocument(async (document) => {
+            if (document.languageId !== 'python') {
+                return;
+            }
+            if (webviewManager.isVisible()) {
+                await updatePreviewForDocument(document);
+            }
+        })
+    );
 
     // Listen for active editor changes
-    const editorChangeListener = vscode.window.onDidChangeActiveTextEditor(async (editor) => {
-        if (!editor || !webviewManager.isVisible()) {
-            return;
-        }
-
-        const document = editor.document;
-        if (document.languageId === 'python') {
-            currentDocument = document;
-            await updatePreviewForDocument(document);
-        }
-    });
-
-    // Listen for text document changes (hot reload)
-    const textChangeListener = vscode.workspace.onDidChangeTextDocument(async (event) => {
-        if (!webviewManager.isVisible()) {
-            return;
-        }
-
-        const document = event.document;
-        if (document.languageId !== 'python') {
-            return;
-        }
-
-        // Debounce updates
-        if (updateTimeout) {
-            clearTimeout(updateTimeout);
-        }
-
-        updateTimeout = setTimeout(async () => {
-            await updatePreviewForDocument(document);
-        }, DEBOUNCE_DELAY);
-    });
-
-    // Add subscriptions
     context.subscriptions.push(
-        showPreviewCommand,
-        insertTemplateCommand,
-        showProjectOverviewCommand,
-        exportComponentsCommand,
-        saveListener,
-        editorChangeListener,
-        textChangeListener,
-        diagnosticCollection
-    );
-
-    // Register settings commands
-    context.subscriptions.push(
-        vscode.commands.registerCommand('discord-preview.openSettings', async () => {
-            await ConfigurationManager.openSettings();
-        }),
-        vscode.commands.registerCommand('discord-preview.resetSettings', async () => {
-            const confirm = await vscode.window.showWarningMessage(
-                'Are you sure you want to reset all Discord Component Preview settings to default?',
-                'Reset', 'Cancel'
-            );
-            if (confirm === 'Reset') {
-                await ConfigurationManager.resetToDefault();
+        vscode.window.onDidChangeActiveTextEditor(async (editor) => {
+            if (!editor || !webviewManager.isVisible()) {
+                return;
             }
-        }),
-        vscode.commands.registerCommand('discord-preview.searchComponents', async () => {
-            await ComponentSearch.searchInWorkspace();
-        })
-    );
 
-    // Watch for configuration changes
-    context.subscriptions.push(
-        ConfigurationManager.onDidChange((e) => {
-            if (e.affectsConfiguration('discord-preview.theme')) {
-                vscode.window.showInformationMessage('Theme changed. Please refresh the preview.');
-            }
-            if (e.affectsConfiguration('discord-preview.enableCache')) {
-                const enabled = ConfigurationManager.get('enableCache', true);
-                vscode.window.showInformationMessage(`Parse cache ${enabled ? 'enabled' : 'disabled'}`);
+            const document = editor.document;
+            if (document.languageId === 'python') {
+                currentDocument = document;
+                await updatePreviewForDocument(document);
             }
         })
     );
 
-    // Show Python version in status bar (optional, for debugging)
+    // Listen for text document changes (hot reload with debounce)
+    context.subscriptions.push(
+        vscode.workspace.onDidChangeTextDocument(async (event) => {
+            if (!webviewManager.isVisible()) {
+                return;
+            }
+
+            const document = event.document;
+            if (document.languageId !== 'python') {
+                return;
+            }
+
+            if (updateTimeout) {
+                clearTimeout(updateTimeout);
+            }
+
+            updateTimeout = setTimeout(async () => {
+                await updatePreviewForDocument(document);
+            }, DEBOUNCE_DELAY);
+        })
+    );
+
+    context.subscriptions.push(diagnosticCollection);
+
+    // Show Python version in status bar
     showPythonVersionStatus(context);
 }
 
@@ -173,13 +218,8 @@ async function showPreview(): Promise<void> {
         return;
     }
 
-    // Save current document reference
     currentDocument = document;
-
-    // Create or show the webview
     webviewManager.createOrShow();
-
-    // Update preview with current document
     await updatePreviewForDocument(document);
 }
 
@@ -202,7 +242,6 @@ async function updatePreviewForDocument(document: vscode.TextDocument): Promise<
             return;
         }
 
-        // Parse the document
         const filePath = document.uri.fsPath;
         const result = await parseComponents(filePath);
 
@@ -217,37 +256,37 @@ async function updatePreviewForDocument(document: vscode.TextDocument): Promise<
         // Check for critical errors
         const criticalErrors = result.errors.filter(e => e.severity === 'error');
         if (criticalErrors.length > 0) {
-            // Show notification for syntax errors or critical parsing errors
             const firstError = criticalErrors[0];
             const lineInfo = firstError.line ? ` at line ${firstError.line}` : '';
-            vscode.window.showWarningMessage(
-                `Parse error${lineInfo}: ${firstError.message}`
-            );
+            vscode.window.showWarningMessage(`Parse error${lineInfo}: ${firstError.message}`);
         }
 
         // Update the webview
-        webviewManager.updatePreview(result.components, result.errors, result.warnings || [], sourceCode, result.views, document);
+        webviewManager.updatePreview(
+            result.components,
+            result.errors,
+            result.warnings || [],
+            sourceCode,
+            result.views,
+            document
+        );
 
         // Update diagnostics
         updateDiagnostics(document, result.errors, result.warnings || []);
 
-        // Show info message if components were found
         if (result.components.length > 0) {
             console.log(`Found ${result.components.length} component(s) in ${document.fileName}`);
         }
 
     } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
-        
-        // Check if it's a timeout error
+
         if (errorMessage.includes('timed out')) {
             vscode.window.showErrorMessage(
                 'Python script execution timed out. The file might be too large or complex.'
             );
         } else {
-            vscode.window.showErrorMessage(
-                `Failed to parse file: ${errorMessage}`
-            );
+            vscode.window.showErrorMessage(`Failed to parse file: ${errorMessage}`);
         }
 
         webviewManager.updatePreview([], [{
@@ -258,7 +297,7 @@ async function updatePreviewForDocument(document: vscode.TextDocument): Promise<
 }
 
 /**
- * Show Python version in status bar (for debugging purposes)
+ * Show Python version in status bar
  */
 async function showPythonVersionStatus(context: vscode.ExtensionContext): Promise<void> {
     try {
@@ -272,7 +311,6 @@ async function showPythonVersionStatus(context: vscode.ExtensionContext): Promis
         statusBarItem.show();
         context.subscriptions.push(statusBarItem);
     } catch (error) {
-        // Silently fail if Python is not available yet
         console.log('Could not determine Python version:', error);
     }
 }
@@ -283,30 +321,28 @@ async function showPythonVersionStatus(context: vscode.ExtensionContext): Promis
 function updateDiagnostics(document: vscode.TextDocument, errors: any[], warnings: any[]): void {
     const diagnostics: vscode.Diagnostic[] = [];
 
-    // Add errors
     errors.forEach(error => {
         if (error.line) {
-            const line = error.line - 1; // Convert to 0-based
+            const line = error.line - 1;
             const range = new vscode.Range(line, 0, line, Number.MAX_VALUE);
-            const severity = error.severity === 'error' 
-                ? vscode.DiagnosticSeverity.Error 
+            const severity = error.severity === 'error'
+                ? vscode.DiagnosticSeverity.Error
                 : vscode.DiagnosticSeverity.Warning;
-            
+
             const diagnostic = new vscode.Diagnostic(range, error.message, severity);
             diagnostic.source = 'Discord Components';
             diagnostics.push(diagnostic);
         }
     });
 
-    // Add validation warnings
     warnings.forEach(warning => {
         if (warning.line) {
-            const line = warning.line - 1; // Convert to 0-based
+            const line = warning.line - 1;
             const range = new vscode.Range(line, 0, line, Number.MAX_VALUE);
             const severity = warning.severity === 'error'
                 ? vscode.DiagnosticSeverity.Error
                 : vscode.DiagnosticSeverity.Warning;
-            
+
             const diagnostic = new vscode.Diagnostic(range, warning.message, severity);
             diagnostic.source = 'Discord Components';
             diagnostic.code = warning.code;
@@ -365,12 +401,10 @@ async function insertTemplate(): Promise<void> {
     const position = editor.selection.active;
     const lineText = editor.document.lineAt(position.line).text;
     const indent = lineText.match(/^\s*/)?.[0] || '';
-    
-    // Add indentation to template code
+
     const indentedCode = selectedItem.template.code
         .split('\n')
         .map((line, index) => {
-            // Don't indent the first line if inserting at start of line
             if (index === 0 && position.character === 0) {
                 return line;
             }
@@ -382,94 +416,7 @@ async function insertTemplate(): Promise<void> {
         editBuilder.insert(position, indentedCode + '\n\n');
     });
 
-    // Show success message
     vscode.window.showInformationMessage(`Inserted template: ${selectedItem.label}`);
-}
-
-/**
- * Show project-wide component overview
- */
-async function showProjectOverview(): Promise<void> {
-    const files = await ProjectScanner.scanWorkspace();
-    
-    if (files.length === 0) {
-        vscode.window.showInformationMessage('No Discord components found in this workspace');
-        return;
-    }
-
-    // Create webview panel
-    const panel = vscode.window.createWebviewPanel(
-        'discordProjectOverview',
-        'Discord Component Overview',
-        vscode.ViewColumn.One,
-        {
-            enableScripts: true,
-            retainContextWhenHidden: true
-        }
-    );
-
-    panel.webview.html = ProjectScanner.generateReport(files);
-}
-
-/**
- * Export components from current file
- */
-async function exportComponents(): Promise<void> {
-    const editor = vscode.window.activeTextEditor;
-
-    if (!editor) {
-        vscode.window.showErrorMessage('No active editor found');
-        return;
-    }
-
-    if (editor.document.languageId !== 'python') {
-        vscode.window.showErrorMessage('This command only works in Python files');
-        return;
-    }
-
-    // Parse components
-    const result = await parseComponents(editor.document.fileName);
-
-    if (result.components.length === 0) {
-        vscode.window.showInformationMessage('No components found in this file');
-        return;
-    }
-
-    // Ask user which format
-    const format = await vscode.window.showQuickPick(
-        [
-            { label: 'JSON', description: 'Discord Interaction JSON format' },
-            { label: 'Markdown', description: 'Markdown documentation' }
-        ],
-        { placeHolder: 'Select export format' }
-    );
-
-    if (!format) {
-        return;
-    }
-
-    const views = result.views || [];
-    const fileName = path.basename(editor.document.fileName, '.py');
-
-    if (format.label === 'JSON') {
-        const content = ComponentExporter.exportToJSON(result.components, views);
-        await ComponentExporter.saveToFile(
-            content,
-            `${fileName}_components.json`,
-            { 'JSON': ['json'] }
-        );
-    } else {
-        const content = ComponentExporter.exportToMarkdown(
-            result.components,
-            views,
-            editor.document.fileName
-        );
-        await ComponentExporter.saveToFile(
-            content,
-            `${fileName}_components.md`,
-            { 'Markdown': ['md'] }
-        );
-    }
 }
 
 /**
@@ -478,6 +425,7 @@ async function exportComponents(): Promise<void> {
 export function deactivate() {
     console.log('Discord Component Preview extension is now deactivated');
     webviewManager.close();
+    uiBuilder.close();
     diagnosticCollection.clear();
     diagnosticCollection.dispose();
 }

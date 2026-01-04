@@ -50,7 +50,7 @@ export class ComponentSearch {
             cancellable: false
         }, async (progress) => {
             const results = await this.performSearch(searchType.value, query);
-            
+
             if (results.length === 0) {
                 vscode.window.showInformationMessage('No components found');
                 return;
@@ -82,14 +82,14 @@ export class ComponentSearch {
      */
     private static async performSearch(type: string, query: string): Promise<SearchResult[]> {
         const results: SearchResult[] = [];
-        
+
         // Find all Python files
         const files = await vscode.workspace.findFiles('**/*.py', '**/node_modules/**');
 
         for (const file of files) {
             try {
                 const parseResult = await parseComponents(file.fsPath);
-                
+
                 if (!parseResult.components) {
                     continue;
                 }
@@ -110,7 +110,7 @@ export class ComponentSearch {
                             break;
                         case 'view':
                             // Search in view name from parseResult
-                            const viewName = parseResult.views?.find((v: any) => 
+                            const viewName = parseResult.views?.find((v: any) =>
                                 v.components?.some((c: any) => c === component)
                             )?.name || '';
                             match = viewName.toLowerCase().includes(query.toLowerCase());
@@ -182,7 +182,7 @@ export class ComponentSearch {
     private static async openFileAtLine(file: string, line: number): Promise<void> {
         const document = await vscode.workspace.openTextDocument(file);
         const editor = await vscode.window.showTextDocument(document);
-        
+
         const position = new vscode.Position(Math.max(0, line - 1), 0);
         editor.selection = new vscode.Selection(position, position);
         editor.revealRange(
@@ -208,7 +208,7 @@ export class ComponentSearch {
 
         try {
             const parseResult = await parseComponents(editor.document.fileName);
-            
+
             if (!parseResult.components || parseResult.components.length === 0) {
                 vscode.window.showInformationMessage('No components found in current file');
                 return;

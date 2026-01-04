@@ -2,8 +2,17 @@
   "name": "discord-component-preview",
   "displayName": "Discord Component Preview",
   "description": "Preview discord.py ComponentV2 (Buttons, SelectMenus, etc.) in VS Code",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "kousakirai",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kousakirai/component-v2-emulator"
+  },
+  "homepage": "https://github.com/kousakirai/component-v2-emulator#readme",
+  "bugs": {
+    "url": "https://github.com/kousakirai/component-v2-emulator/issues"
+  },
   "engines": {
     "vscode": "^1.80.0"
   },
@@ -19,37 +28,52 @@
     "commands": [
       {
         "command": "discord-preview.showPreview",
-        "title": "Show Discord Component Preview",
-        "category": "Discord"
+        "title": "Show Component Preview",
+        "category": "Discord",
+        "icon": "$(preview)"
       },
       {
         "command": "discord-preview.insertTemplate",
         "title": "Insert Component Template",
+        "category": "Discord",
+        "icon": "$(add)"
+      },
+      {
+        "command": "discord-preview.showPresetPicker",
+        "title": "Insert Component Preset",
         "category": "Discord"
       },
       {
-        "command": "discord-preview.showProjectOverview",
-        "title": "Show Project Component Overview",
+        "command": "discord-preview.saveAsPreset",
+        "title": "Save Selection as Preset",
         "category": "Discord"
       },
       {
-        "command": "discord-preview.exportComponents",
-        "title": "Export Components",
+        "command": "discord-preview.editComponent",
+        "title": "Edit Component",
+        "category": "Discord",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "discord-preview.refresh",
+        "title": "Refresh Preview",
+        "category": "Discord",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "discord-preview.openUIBuilder",
+        "title": "Open UI Builder (LayoutView)",
+        "category": "Discord",
+        "icon": "$(layout)"
+      },
+      {
+        "command": "discordComponents.showVersionInfo",
+        "title": "Show discord.py Version Info",
         "category": "Discord"
       },
       {
-        "command": "discord-preview.openSettings",
-        "title": "Open Settings",
-        "category": "Discord"
-      },
-      {
-        "command": "discord-preview.resetSettings",
-        "title": "Reset Settings to Default",
-        "category": "Discord"
-      },
-      {
-        "command": "discord-preview.searchComponents",
-        "title": "Search Components in Workspace",
+        "command": "discordComponents.refreshVersion",
+        "title": "Refresh discord.py Version",
         "category": "Discord"
       }
     ],
@@ -58,34 +82,51 @@
         {
           "when": "resourceLangId == python",
           "command": "discord-preview.showPreview",
-          "group": "navigation"
+          "group": "discord@1"
+        },
+        {
+          "when": "resourceLangId == python",
+          "command": "discord-preview.editComponent",
+          "group": "discord@2"
         },
         {
           "when": "resourceLangId == python",
           "command": "discord-preview.insertTemplate",
-          "group": "navigation"
+          "group": "discord@3"
         },
         {
           "when": "resourceLangId == python",
-          "command": "discord-preview.exportComponents",
-          "group": "navigation"
+          "command": "discord-preview.openUIBuilder",
+          "group": "discord@4"
         }
       ],
       "commandPalette": [
         {
-          "command": "discord-preview.showPreview",
-          "when": "resourceLangId == python"
+          "command": "discord-preview.showPreview"
         },
         {
-          "command": "discord-preview.insertTemplate",
-          "when": "resourceLangId == python"
+          "command": "discord-preview.insertTemplate"
         },
         {
-          "command": "discord-preview.showProjectOverview"
+          "command": "discord-preview.showPresetPicker"
         },
         {
-          "command": "discord-preview.exportComponents",
-          "when": "resourceLangId == python"
+          "command": "discord-preview.saveAsPreset"
+        },
+        {
+          "command": "discord-preview.editComponent"
+        },
+        {
+          "command": "discord-preview.refresh"
+        },
+        {
+          "command": "discord-preview.openUIBuilder"
+        },
+        {
+          "command": "discordComponents.showVersionInfo"
+        },
+        {
+          "command": "discordComponents.refreshVersion"
         }
       ]
     }

@@ -35,6 +35,8 @@ class ComponentVisitor(ast.NodeVisitor):
         self.in_init_method: bool = False  # Track if we're inside __init__
         self.processed_nodes: set = set()  # Track processed AST nodes to avoid duplicates
         self.variables: Dict[str, ast.AST] = {}  # Track variable assignments for option arrays
+        self.hierarchy_tracking: Dict[str, Dict[str, Any]] = {}  # Track container/section/row variables
+        self.hierarchy_relationships: List[Dict[str, Any]] = []  # Track parent-child relationships
     
     def visit_Assign(self, node: ast.Assign) -> None:
         """Visit assignments to detect class variables and module-level components"""
@@ -52,11 +54,31 @@ class ComponentVisitor(ast.NodeVisitor):
                     if node_id not in self.processed_nodes:
                         self.processed_nodes.add(node_id)
                         if self._is_button_call(node.value):
-                            self._extract_button_properties(node.value, node.lineno, variable_name)
+                            self._extract_button_properties(node.value, node.lineno, callback=None, variable_name=variable_name)
                         elif self._is_select_menu_call(node.value):
-                            self._extract_select_menu_properties(node.value, node.lineno, variable_name)
+                            self._extract_select_menu_properties(node.value, node.lineno, callback=None, variable_name=variable_name)
                         elif self._is_text_input_call(node.value):
-                            self._extract_text_input_properties(node.value, node.lineno, variable_name)
+                            self._extract_text_input_properties(node.value, node.lineno, callback=None, variable_name=variable_name)
+                        elif self._is_container_call(node.value):
+                            self._track_container(variable_name, node.value, node.lineno)
+                        elif self._is_section_call(node.value):
+                            self._track_section(variable_name, node.value, node.lineno)
+                        elif self._is_action_row_call(node.value):
+                            self._track_action_row(variable_name, node.value, node.lineno)
+                        elif self._is_text_display_call(node.value):
+                            self._extract_text_display_properties(node.value, node.lineno, variable_name=variable_name)
+                        elif self._is_label_call(node.value):
+                            self._extract_label_properties(node.value, node.lineno, variable_name=variable_name)
+                        elif self._is_separator_call(node.value):
+                            self._extract_separator_properties(node.value, node.lineno, variable_name=variable_name)
+                        elif self._is_thumbnail_call(node.value):
+                            self._extract_thumbnail_properties(node.value, node.lineno, variable_name=variable_name)
+                        elif self._is_file_call(node.value):
+                            self._extract_file_properties(node.value, node.lineno, variable_name=variable_name)
+                        elif self._is_media_gallery_call(node.value):
+                            self._extract_media_gallery_properties(node.value, node.lineno, variable_name=variable_name)
+                        elif self._is_file_upload_call(node.value):
+                            self._extract_file_upload_properties(node.value, node.lineno, variable_name=variable_name)
         
         self.generic_visit(node)
     
@@ -80,12 +102,17 @@ class ComponentVisitor(ast.NodeVisitor):
         self.generic_visit(node)
     
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        """Visit class definitions to detect View/Modal classes"""
-        # Check if class inherits from View or Modal
+        """Visit class definitions to detect View/Modal/LayoutView classes"""
+        # Check if class inherits from View, Modal, or LayoutView
         class_type = None
+        is_layout_view = False
         for base in node.bases:
             base_name = self._get_base_name(base)
-            if 'View' in base_name or 'LayoutView' in base_name:
+            if 'LayoutView' in base_name:
+                class_type = 'LayoutView'
+                is_layout_view = True
+                break
+            elif 'View' in base_name:
                 class_type = 'View'
                 break
             elif 'Modal' in base_name:
@@ -108,13 +135,23 @@ class ComponentVisitor(ast.NodeVisitor):
             # Visit class body
             self.generic_visit(node)
             
+            # Build hierarchy for this view
+            hierarchy = self._build_hierarchy()
+            
             # Save view structure
             self.views.append({
                 'name': self.current_class,
                 'type': self.current_class_type,
                 'line': self.current_class_line,
-                'components': self.class_components.copy()
+                'components': self.class_components.copy(),
+                'children': hierarchy,
+                'isLayoutView': is_layout_view,
+                'requiresManualLayout': is_layout_view
             })
+            
+            # Clear hierarchy tracking for this class
+            self.hierarchy_tracking.clear()
+            self.hierarchy_relationships.clear()
             
             # Restore previous context
             self.current_class = prev_class
@@ -133,39 +170,72 @@ class ComponentVisitor(ast.NodeVisitor):
         return ''
     
     def visit_Call(self, node: ast.Call) -> None:
-        """Visit function calls to detect component instantiation"""
+        """Visit function calls to detect component instantiation and hierarchy methods"""
         # Check for add_item() calls in __init__
         if self.in_init_method and self._is_add_item_call(node):
             self._extract_add_item_component(node)
-        # All other Call nodes are handled by Assign/AnnAssign or decorators
-        # No need to process them here to avoid duplicates
+            self._track_hierarchy_call(node, 'add_item')
+        # Check for add_section() calls
+        elif self.in_init_method and self._is_hierarchy_method(node, 'add_section'):
+            self._track_hierarchy_call(node, 'add_section')
+        # Check for add_row() calls
+        elif self.in_init_method and self._is_hierarchy_method(node, 'add_row'):
+            self._track_hierarchy_call(node, 'add_row')
+        # Check for append_item() calls
+        elif self.in_init_method and self._is_hierarchy_method(node, 'append_item'):
+            self._track_hierarchy_call(node, 'append_item')
         
         self.generic_visit(node)
     
     def _is_add_item_call(self, node: ast.Call) -> bool:
-        """Check if the call is self.add_item()"""
+        """Check if the call is *.add_item() (self or any variable)"""
         if isinstance(node.func, ast.Attribute):
             if node.func.attr == 'add_item':
-                if isinstance(node.func.value, ast.Name):
-                    if node.func.value.id == 'self':
-                        return True
+                return True
         return False
     
-    def _extract_add_item_component(self, node: ast.Call) -> None:
-        """Extract component from add_item() call"""
+    def _extract_add_item_component(self, node: ast.Call) -> Optional[Dict[str, Any]]:
+        """Extract component from add_item() or append_item() call and return the component data"""
         # The first argument should be the component
+        component_data = None
         if len(node.args) > 0:
             arg = node.args[0]
+            variable_name = None
+            
+            # Check if it's a variable reference
+            if isinstance(arg, ast.Name):
+                variable_name = arg.id
+            
             if isinstance(arg, ast.Call):
                 node_id = id(arg)
                 if node_id not in self.processed_nodes:
                     self.processed_nodes.add(node_id)
                     if self._is_button_call(arg):
-                        self._extract_button_properties(arg, node.lineno)
+                        component_data = self._extract_button_properties(arg, node.lineno, variable_name=variable_name)
                     elif self._is_select_menu_call(arg):
-                        self._extract_select_menu_properties(arg, node.lineno)
+                        component_data = self._extract_select_menu_properties(arg, node.lineno, variable_name=variable_name)
                     elif self._is_text_input_call(arg):
-                        self._extract_text_input_properties(arg, node.lineno)
+                        component_data = self._extract_text_input_properties(arg, node.lineno, variable_name=variable_name)
+                    elif self._is_text_display_call(arg):
+                        component_data = self._extract_text_display_properties(arg, node.lineno, variable_name=variable_name)
+                    elif self._is_label_call(arg):
+                        component_data = self._extract_label_properties(arg, node.lineno, variable_name=variable_name)
+                    elif self._is_separator_call(arg):
+                        component_data = self._extract_separator_properties(arg, node.lineno, variable_name=variable_name)
+                    elif self._is_thumbnail_call(arg):
+                        component_data = self._extract_thumbnail_properties(arg, node.lineno, variable_name=variable_name)
+                    elif self._is_file_call(arg):
+                        component_data = self._extract_file_properties(arg, node.lineno, variable_name=variable_name)
+                    elif self._is_media_gallery_call(arg):
+                        component_data = self._extract_media_gallery_properties(arg, node.lineno, variable_name=variable_name)
+                    elif self._is_file_upload_call(arg):
+                        component_data = self._extract_file_upload_properties(arg, node.lineno, variable_name=variable_name)
+            elif isinstance(arg, ast.Name):
+                # It's a variable reference - the component was created earlier
+                # The tracking will happen in _track_hierarchy_call
+                pass
+        
+        return component_data
     
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         """Visit function definitions to detect decorators"""
@@ -301,6 +371,163 @@ class ComponentVisitor(ast.NodeVisitor):
                 return True
         return False
     
+    def _is_container_call(self, node: ast.Call) -> bool:
+        """Check if the call is discord.ui.Container()"""
+        if isinstance(node.func, ast.Attribute):
+            if node.func.attr == 'Container':
+                if isinstance(node.func.value, ast.Attribute):
+                    if node.func.value.attr == 'ui':
+                        return True
+                elif isinstance(node.func.value, ast.Name):
+                    if node.func.value.id == 'ui':
+                        return True
+        elif isinstance(node.func, ast.Name):
+            if node.func.id == 'Container':
+                return True
+        return False
+    
+    def _is_section_call(self, node: ast.Call) -> bool:
+        """Check if the call is discord.ui.Section()"""
+        if isinstance(node.func, ast.Attribute):
+            if node.func.attr == 'Section':
+                if isinstance(node.func.value, ast.Attribute):
+                    if node.func.value.attr == 'ui':
+                        return True
+                elif isinstance(node.func.value, ast.Name):
+                    if node.func.value.id == 'ui':
+                        return True
+        elif isinstance(node.func, ast.Name):
+            if node.func.id == 'Section':
+                return True
+        return False
+    
+    def _is_action_row_call(self, node: ast.Call) -> bool:
+        """Check if the call is discord.ui.ActionRow()"""
+        if isinstance(node.func, ast.Attribute):
+            if node.func.attr == 'ActionRow':
+                if isinstance(node.func.value, ast.Attribute):
+                    if node.func.value.attr == 'ui':
+                        return True
+                elif isinstance(node.func.value, ast.Name):
+                    if node.func.value.id == 'ui':
+                        return True
+        elif isinstance(node.func, ast.Name):
+            if node.func.id == 'ActionRow':
+                return True
+        return False
+    
+    def _is_hierarchy_method(self, node: ast.Call, method_name: str) -> bool:
+        """Check if the call is a hierarchy method (add_section, add_row, append_item)"""
+        if isinstance(node.func, ast.Attribute):
+            if node.func.attr == method_name:
+                return True
+        return False
+    
+    def _is_text_display_call(self, node: ast.Call) -> bool:
+        """Check if the call is discord.ui.TextDisplay()"""
+        if isinstance(node.func, ast.Attribute):
+            if node.func.attr == 'TextDisplay':
+                if isinstance(node.func.value, ast.Attribute):
+                    if node.func.value.attr == 'ui':
+                        return True
+                elif isinstance(node.func.value, ast.Name):
+                    if node.func.value.id == 'ui':
+                        return True
+        elif isinstance(node.func, ast.Name):
+            if node.func.id == 'TextDisplay':
+                return True
+        return False
+    
+    def _is_label_call(self, node: ast.Call) -> bool:
+        """Check if the call is discord.ui.Label()"""
+        if isinstance(node.func, ast.Attribute):
+            if node.func.attr == 'Label':
+                if isinstance(node.func.value, ast.Attribute):
+                    if node.func.value.attr == 'ui':
+                        return True
+                elif isinstance(node.func.value, ast.Name):
+                    if node.func.value.id == 'ui':
+                        return True
+        elif isinstance(node.func, ast.Name):
+            if node.func.id == 'Label':
+                return True
+        return False
+    
+    def _is_separator_call(self, node: ast.Call) -> bool:
+        """Check if the call is discord.ui.Separator()"""
+        if isinstance(node.func, ast.Attribute):
+            if node.func.attr == 'Separator':
+                if isinstance(node.func.value, ast.Attribute):
+                    if node.func.value.attr == 'ui':
+                        return True
+                elif isinstance(node.func.value, ast.Name):
+                    if node.func.value.id == 'ui':
+                        return True
+        elif isinstance(node.func, ast.Name):
+            if node.func.id == 'Separator':
+                return True
+        return False
+    
+    def _is_thumbnail_call(self, node: ast.Call) -> bool:
+        """Check if the call is discord.ui.Thumbnail()"""
+        if isinstance(node.func, ast.Attribute):
+            if node.func.attr == 'Thumbnail':
+                if isinstance(node.func.value, ast.Attribute):
+                    if node.func.value.attr == 'ui':
+                        return True
+                elif isinstance(node.func.value, ast.Name):
+                    if node.func.value.id == 'ui':
+                        return True
+        elif isinstance(node.func, ast.Name):
+            if node.func.id == 'Thumbnail':
+                return True
+        return False
+    
+    def _is_file_call(self, node: ast.Call) -> bool:
+        """Check if the call is discord.ui.File()"""
+        if isinstance(node.func, ast.Attribute):
+            if node.func.attr == 'File':
+                if isinstance(node.func.value, ast.Attribute):
+                    if node.func.value.attr == 'ui':
+                        return True
+                elif isinstance(node.func.value, ast.Name):
+                    if node.func.value.id == 'ui':
+                        return True
+        elif isinstance(node.func, ast.Name):
+            if node.func.id == 'File':
+                return True
+        return False
+    
+    def _is_media_gallery_call(self, node: ast.Call) -> bool:
+        """Check if the call is discord.ui.MediaGallery()"""
+        if isinstance(node.func, ast.Attribute):
+            if node.func.attr == 'MediaGallery':
+                if isinstance(node.func.value, ast.Attribute):
+                    if node.func.value.attr == 'ui':
+                        return True
+                elif isinstance(node.func.value, ast.Name):
+                    if node.func.value.id == 'ui':
+                        return True
+        elif isinstance(node.func, ast.Name):
+            if node.func.id == 'MediaGallery':
+                return True
+        return False
+    
+    def _is_file_upload_call(self, node: ast.Call) -> bool:
+        """Check if the call is discord.ui.FileUpload()"""
+        if isinstance(node.func, ast.Attribute):
+            if node.func.attr == 'FileUpload':
+                if isinstance(node.func.value, ast.Attribute):
+                    if node.func.value.attr == 'ui':
+                        return True
+                elif isinstance(node.func.value, ast.Name):
+                    if node.func.value.id == 'ui':
+                        return True
+        elif isinstance(node.func, ast.Name):
+            if node.func.id == 'FileUpload':
+                return True
+        return False
+    
     def _is_modal_call(self, node: ast.Call) -> bool:
         """Check if the call is discord.ui.Modal()"""
         if isinstance(node.func, ast.Attribute):
@@ -313,7 +540,7 @@ class ComponentVisitor(ast.NodeVisitor):
                         return True
         return False
     
-    def _extract_button_properties(self, call_node: ast.Call, line: Optional[int] = None, callback: Optional[str] = None) -> None:
+    def _extract_button_properties(self, call_node: ast.Call, line: Optional[int] = None, callback: Optional[str] = None, variable_name: Optional[str] = None) -> None:
         """Extract properties from Button instantiation or decorator"""
         properties: Dict[str, Any] = {}
         
@@ -345,6 +572,14 @@ class ComponentVisitor(ast.NodeVisitor):
         # Add to current class if we're in one
         if self.current_class:
             self.class_components.append(button_data)
+        
+        # Track in hierarchy if variable name provided
+        if variable_name:
+            self.hierarchy_tracking[variable_name] = {
+                'nodeType': 'item',
+                'data': button_data,
+                'line': line
+            }
     
     def _evaluate_value(self, node: ast.AST) -> Optional[Any]:
         """Safely evaluate AST node to extract value"""
@@ -423,7 +658,7 @@ class ComponentVisitor(ast.NodeVisitor):
         # Default to secondary if unknown
         return 'secondary'
     
-    def _extract_select_menu_properties(self, call_node: ast.Call, line: Optional[int] = None, callback: Optional[str] = None) -> None:
+    def _extract_select_menu_properties(self, call_node: ast.Call, line: Optional[int] = None, callback: Optional[str] = None, variable_name: Optional[str] = None) -> None:
         """Extract properties from SelectMenu instantiation or decorator"""
         properties: Dict[str, Any] = {}
         
@@ -457,6 +692,14 @@ class ComponentVisitor(ast.NodeVisitor):
         # Add to current class if we're in one
         if self.current_class:
             self.class_components.append(select_data)
+        
+        # Track in hierarchy if variable name provided
+        if variable_name:
+            self.hierarchy_tracking[variable_name] = {
+                'nodeType': 'item',
+                'data': select_data,
+                'line': line
+            }
     
     def _extract_select_options(self, node: ast.AST) -> Optional[List[Dict[str, Any]]]:
         """Extract SelectOption objects from a list or variable reference"""
@@ -524,7 +767,7 @@ class ComponentVisitor(ast.NodeVisitor):
         # Even if values are dynamic, we know the structure exists
         return option_props if option_props else None
     
-    def _extract_text_input_properties(self, call_node: ast.Call, line: Optional[int] = None, callback: Optional[str] = None) -> None:
+    def _extract_text_input_properties(self, call_node: ast.Call, line: Optional[int] = None, callback: Optional[str] = None, variable_name: Optional[str] = None) -> None:
         """Extract properties from TextInput instantiation"""
         properties: Dict[str, Any] = {}
         
@@ -555,6 +798,14 @@ class ComponentVisitor(ast.NodeVisitor):
         # Add to current class if we're in one
         if self.current_class:
             self.class_components.append(text_input_data)
+        
+        # Track in hierarchy if variable name provided
+        if variable_name:
+            self.hierarchy_tracking[variable_name] = {
+                'nodeType': 'item',
+                'data': text_input_data,
+                'line': line
+            }
     
     def _normalize_text_input_style(self, style: str) -> str:
         """Normalize TextInputStyle to simple string"""
@@ -563,6 +814,410 @@ class ComponentVisitor(ast.NodeVisitor):
         elif 'paragraph' in style.lower() or 'long' in style.lower():
             return 'paragraph'
         return 'short'
+    
+    def _extract_text_display_properties(self, call_node: ast.Call, line: Optional[int] = None, variable_name: Optional[str] = None) -> None:
+        """Extract properties from TextDisplay instantiation"""
+        properties: Dict[str, Any] = {}
+        
+        if line is None:
+            line = call_node.lineno
+        
+        # Extract keyword arguments
+        for keyword in call_node.keywords:
+            arg_name = keyword.arg
+            if arg_name in ['content', 'style']:
+                value = self._evaluate_value(keyword.value)
+                if value is not None:
+                    properties[arg_name] = value
+        
+        text_display_data = {
+            'type': 'text_display',
+            'properties': properties,
+            'line': line
+        }
+        
+        self.components.append(text_display_data)
+        
+        # Add to current class if we're in one
+        if self.current_class:
+            self.class_components.append(text_display_data)
+        
+        # Track in hierarchy if variable name provided
+        if variable_name:
+            self.hierarchy_tracking[variable_name] = {
+                'nodeType': 'item',
+                'data': text_display_data,
+                'line': line
+            }
+    
+    def _extract_label_properties(self, call_node: ast.Call, line: Optional[int] = None, variable_name: Optional[str] = None) -> None:
+        """Extract properties from Label instantiation"""
+        properties: Dict[str, Any] = {}
+        
+        if line is None:
+            line = call_node.lineno
+        
+        # Extract keyword arguments
+        for keyword in call_node.keywords:
+            arg_name = keyword.arg
+            if arg_name in ['text', 'for']:
+                value = self._evaluate_value(keyword.value)
+                if value is not None:
+                    properties[arg_name] = value
+        
+        label_data = {
+            'type': 'label',
+            'properties': properties,
+            'line': line
+        }
+        
+        self.components.append(label_data)
+        
+        # Add to current class if we're in one
+        if self.current_class:
+            self.class_components.append(label_data)
+        
+        # Track in hierarchy if variable name provided
+        if variable_name:
+            self.hierarchy_tracking[variable_name] = {
+                'nodeType': 'item',
+                'data': label_data,
+                'line': line
+            }
+    
+    def _extract_separator_properties(self, call_node: ast.Call, line: Optional[int] = None, variable_name: Optional[str] = None) -> None:
+        """Extract properties from Separator instantiation"""
+        properties: Dict[str, Any] = {}
+        
+        if line is None:
+            line = call_node.lineno
+        
+        # Extract keyword arguments
+        for keyword in call_node.keywords:
+            arg_name = keyword.arg
+            if arg_name == 'spacing':
+                value = self._evaluate_value(keyword.value)
+                if value is not None:
+                    # Normalize spacing to lowercase
+                    if isinstance(value, str):
+                        spacing_lower = value.lower()
+                        if 'small' in spacing_lower:
+                            properties['spacing'] = 'small'
+                        elif 'medium' in spacing_lower:
+                            properties['spacing'] = 'medium'
+                        elif 'large' in spacing_lower:
+                            properties['spacing'] = 'large'
+                        else:
+                            properties['spacing'] = 'medium'
+        
+        separator_data = {
+            'type': 'separator',
+            'properties': properties,
+            'line': line
+        }
+        
+        self.components.append(separator_data)
+        
+        # Add to current class if we're in one
+        if self.current_class:
+            self.class_components.append(separator_data)
+        
+        # Track in hierarchy if variable name provided
+        if variable_name:
+            self.hierarchy_tracking[variable_name] = {
+                'nodeType': 'item',
+                'data': separator_data,
+                'line': line
+            }
+    
+    def _extract_thumbnail_properties(self, call_node: ast.Call, line: Optional[int] = None, variable_name: Optional[str] = None) -> None:
+        """Extract properties from Thumbnail instantiation"""
+        properties: Dict[str, Any] = {}
+        
+        if line is None:
+            line = call_node.lineno
+        
+        # Extract keyword arguments
+        for keyword in call_node.keywords:
+            arg_name = keyword.arg
+            if arg_name in ['url', 'alt', 'width', 'height']:
+                value = self._evaluate_value(keyword.value)
+                if value is not None:
+                    properties[arg_name] = value
+        
+        thumbnail_data = {
+            'type': 'thumbnail',
+            'properties': properties,
+            'line': line
+        }
+        
+        self.components.append(thumbnail_data)
+        
+        # Add to current class if we're in one
+        if self.current_class:
+            self.class_components.append(thumbnail_data)
+        
+        # Track in hierarchy if variable name provided
+        if variable_name:
+            self.hierarchy_tracking[variable_name] = {
+                'nodeType': 'item',
+                'data': thumbnail_data,
+                'line': line
+            }
+    
+    def _extract_file_properties(self, call_node: ast.Call, line: Optional[int] = None, variable_name: Optional[str] = None) -> None:
+        """Extract properties from File instantiation"""
+        properties: Dict[str, Any] = {}
+        
+        if line is None:
+            line = call_node.lineno
+        
+        # Extract keyword arguments
+        for keyword in call_node.keywords:
+            arg_name = keyword.arg
+            if arg_name in ['filename', 'url', 'size']:
+                value = self._evaluate_value(keyword.value)
+                if value is not None:
+                    properties[arg_name] = value
+        
+        # Check for positional arguments (filename is first)
+        if len(call_node.args) > 0 and 'filename' not in properties:
+            filename_val = self._evaluate_value(call_node.args[0])
+            if filename_val is not None:
+                properties['filename'] = filename_val
+        
+        file_data = {
+            'type': 'file',
+            'properties': properties,
+            'line': line
+        }
+        
+        self.components.append(file_data)
+        
+        # Add to current class if we're in one
+        if self.current_class:
+            self.class_components.append(file_data)
+        
+        # Track in hierarchy if variable name provided
+        if variable_name:
+            self.hierarchy_tracking[variable_name] = {
+                'nodeType': 'item',
+                'data': file_data,
+                'line': line
+            }
+    
+    def _extract_media_gallery_properties(self, call_node: ast.Call, line: Optional[int] = None, variable_name: Optional[str] = None) -> None:
+        """Extract properties from MediaGallery instantiation"""
+        properties: Dict[str, Any] = {}
+        
+        if line is None:
+            line = call_node.lineno
+        
+        # Extract keyword arguments
+        for keyword in call_node.keywords:
+            arg_name = keyword.arg
+            if arg_name == 'items':
+                # Items is a list of media items
+                # For simplicity, we'll store the count or structure info
+                value = self._evaluate_value(keyword.value)
+                if value is not None:
+                    if isinstance(value, list):
+                        properties['item_count'] = len(value)
+                        properties['items'] = value
+                    else:
+                        properties['items'] = '<dynamic>'
+        
+        # Check for positional arguments (items is first)
+        if len(call_node.args) > 0 and 'items' not in properties:
+            items_val = self._evaluate_value(call_node.args[0])
+            if items_val is not None:
+                if isinstance(items_val, list):
+                    properties['item_count'] = len(items_val)
+                    properties['items'] = items_val
+                else:
+                    properties['items'] = '<dynamic>'
+        
+        media_gallery_data = {
+            'type': 'media_gallery',
+            'properties': properties,
+            'line': line
+        }
+        
+        self.components.append(media_gallery_data)
+        
+        # Add to current class if we're in one
+        if self.current_class:
+            self.class_components.append(media_gallery_data)
+        
+        # Track in hierarchy if variable name provided
+        if variable_name:
+            self.hierarchy_tracking[variable_name] = {
+                'nodeType': 'item',
+                'data': media_gallery_data,
+                'line': line
+            }
+    
+    def _extract_file_upload_properties(self, call_node: ast.Call, line: Optional[int] = None, variable_name: Optional[str] = None) -> None:
+        """Extract properties from FileUpload instantiation"""
+        properties: Dict[str, Any] = {}
+        
+        if line is None:
+            line = call_node.lineno
+        
+        # Extract keyword arguments
+        for keyword in call_node.keywords:
+            arg_name = keyword.arg
+            if arg_name in ['accept', 'multiple']:
+                value = self._evaluate_value(keyword.value)
+                if value is not None:
+                    properties[arg_name] = value
+        
+        file_upload_data = {
+            'type': 'file_upload',
+            'properties': properties,
+            'line': line
+        }
+        
+        self.components.append(file_upload_data)
+        
+        # Add to current class if we're in one
+        if self.current_class:
+            self.class_components.append(file_upload_data)
+        
+        # Track in hierarchy if variable name provided
+        if variable_name:
+            self.hierarchy_tracking[variable_name] = {
+                'nodeType': 'item',
+                'data': file_upload_data,
+                'line': line
+            }
+    
+    def _track_container(self, variable_name: str, node: ast.Call, line: int) -> None:
+        """Track Container instantiation"""
+        properties = {'label': None}
+        for keyword in node.keywords:
+            if keyword.arg == 'label':
+                properties['label'] = self._evaluate_value(keyword.value)
+        
+        self.hierarchy_tracking[variable_name] = {
+            'nodeType': 'container',
+            'type': 'container',
+            'line': line,
+            'properties': properties,
+            'children': []
+        }
+    
+    def _track_section(self, variable_name: str, node: ast.Call, line: int) -> None:
+        """Track Section instantiation"""
+        properties = {'label': None}
+        for keyword in node.keywords:
+            if keyword.arg == 'label':
+                properties['label'] = self._evaluate_value(keyword.value)
+        
+        self.hierarchy_tracking[variable_name] = {
+            'nodeType': 'section',
+            'type': 'section',
+            'line': line,
+            'properties': properties,
+            'children': []
+        }
+    
+    def _track_action_row(self, variable_name: str, node: ast.Call, line: int) -> None:
+        """Track ActionRow instantiation"""
+        row_number = 0
+        for keyword in node.keywords:
+            if keyword.arg == 'row':
+                row_val = self._evaluate_value(keyword.value)
+                if isinstance(row_val, int):
+                    row_number = row_val
+        
+        self.hierarchy_tracking[variable_name] = {
+            'nodeType': 'actionrow',
+            'row': row_number,
+            'line': line,
+            'children': []
+        }
+    
+    def _track_hierarchy_call(self, node: ast.Call, method_name: str) -> None:
+        """Track hierarchy relationship calls (add_item, add_section, add_row, append_item)"""
+        # Get the parent variable name
+        parent_var = None
+        if isinstance(node.func, ast.Attribute):
+            if isinstance(node.func.value, ast.Name):
+                parent_var = node.func.value.id
+        
+        # Get the child argument
+        child_var = None
+        if len(node.args) > 0:
+            arg = node.args[0]
+            if isinstance(arg, ast.Name):
+                child_var = arg.id
+            elif isinstance(arg, ast.Call):
+                # Inline component call - create a unique key and add to hierarchy_tracking
+                child_var = f"_inline_{id(arg)}"
+                # Get the most recently added component (should be the one we just extracted)
+                if self.class_components:
+                    last_component = self.class_components[-1]
+                    self.hierarchy_tracking[child_var] = {
+                        'nodeType': 'item',
+                        'data': last_component,
+                        'line': arg.lineno
+                    }
+        
+        if parent_var and child_var:
+            self.hierarchy_relationships.append({
+                'parent': parent_var,
+                'child': child_var,
+                'method': method_name,
+                'line': node.lineno
+            })
+    
+    def _build_hierarchy(self) -> List[Dict[str, Any]]:
+        """Build hierarchical structure from tracked relationships"""
+        if not self.hierarchy_relationships:
+            # No hierarchy detected, return empty list
+            return []
+        
+        # Build a map of parent -> children
+        parent_map: Dict[str, List[str]] = {}
+        for rel in self.hierarchy_relationships:
+            parent = rel['parent']
+            child = rel['child']
+            if parent not in parent_map:
+                parent_map[parent] = []
+            parent_map[parent].append(child)
+        
+        # Find root nodes (nodes that are added to 'self')
+        roots = []
+        for rel in self.hierarchy_relationships:
+            if rel['parent'] == 'self':
+                child = rel['child']
+                if child in self.hierarchy_tracking:
+                    roots.append(self._build_node_tree(child, parent_map))
+        
+        return roots
+    
+    def _build_node_tree(self, var_name: str, parent_map: Dict[str, List[str]]) -> Dict[str, Any]:
+        """Recursively build a node tree"""
+        # Get the node data
+        node_data = self.hierarchy_tracking.get(var_name, {})
+        
+        # Build children
+        children = []
+        if var_name in parent_map:
+            for child_var in parent_map[var_name]:
+                if child_var in self.hierarchy_tracking:
+                    child_node = self._build_node_tree(child_var, parent_map)
+                    children.append(child_node)
+        
+        result = dict(node_data)
+        if children:
+            result['children'] = children
+        elif not children and result.get('nodeType') in ['container', 'section', 'actionrow']:
+            # These should have children but don't - add empty array
+            result['children'] = []
+        
+        return result
     
     def _extract_modal_properties(self, call_node: ast.Call, line: Optional[int] = None) -> None:
         """Extract properties from Modal instantiation"""
