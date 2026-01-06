@@ -1,6 +1,6 @@
 # Discord Component Preview for VS Code
 
-discord.py v2.6+ LayoutView / ComponentV2 のビジュアル開発ツールです。ドラッグ＆ドロップのUI Builder、リアルタイムプレビュー、コード生成、IntelliSense支援を提供します。
+discord.py v2.6+ LayoutView / ComponentV2 のビジュアル開発ツールです。ドラッグ＆ドロップのUI Builder、リアルタイムプレビュー、コード生成、を提供します。
 
 ![Version](https://img.shields.io/badge/version-0.2.0-blue)
 ![discord.py](https://img.shields.io/badge/discord.py-v2.6+-green)
